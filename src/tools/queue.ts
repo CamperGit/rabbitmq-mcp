@@ -161,18 +161,20 @@ export const purgeQueue = {
   }
 }
 
+const getQueueMessagesParams = z.object({
+  vhost: z.string(),
+  name: z.string(),
+  count: z.number().default(1),
+  ackmode: z.enum(["get", "reject_requeue_true"]).default("get"),
+  encoding: z.enum(["auto", "base64"]).default("auto"),
+  truncate: z.string().optional(),
+  requeue: z.boolean().optional().default(false),
+});
+
 export const getQueueMessages = {
   name: "get-queue-messages",
   description: "Get messages from a queue",
-  params: z.object({
-    vhost: z.string(),
-    name: z.string(),
-    count: z.number().default(1),
-    ackmode: z.enum(["get", "reject_requeue_true"]).default("get"),
-    encoding: z.enum(["auto", "base64"]).default("auto"),
-    truncate: z.string().optional(),
-    requeue: z.boolean().optional().default(false),
-  }),
+  params: getQueueMessagesParams, // Используем переменную
   inputSchema: {
     type: "object",
     properties: {
@@ -192,16 +194,25 @@ export const getQueueMessages = {
     openWorldHint: true
   },
   handler: async (args: any): Promise<MCPToolResult> => {
-    const { vhost, name, ...body } = getQueueMessages.params.parse(args)
+    const parsed = getQueueMessagesParams.parse(args);
+    const { vhost, name } = parsed;
+
+    const body = {
+      count: Number(parsed.count),
+      ackmode: parsed.ackmode === "get" ? "ack_requeue_true" : "reject_requeue_true",
+      encoding: parsed.encoding,
+      truncate: parsed.truncate ? Number(parsed.truncate) : 50000
+    };
+
     const messages = await rabbitHttpRequest(
-      `/queues/${encodeURIComponent(vhost)}/${encodeURIComponent(name)}/get`,
-      "POST",
-      undefined,
-      body
-    )
-    return { content: [{ type: "text", text: JSON.stringify(messages, null, 2) } as MCPTextContent] }
+        `/queues/${encodeURIComponent(vhost)}/${encodeURIComponent(name)}/get`,
+        "POST",
+        undefined,
+        body
+    );
+    return { content: [{ type: "text", text: JSON.stringify(messages, null, 2) } as MCPTextContent] };
   }
-}
+};
 
 export const getQueueBindings = {
   name: "get-queue-bindings",
@@ -309,6 +320,63 @@ export const resumeQueue = {
   }
 }
 
+const publishMessageParams = z.object({
+  vhost: z.string().describe("The vhost name"),
+  exchange: z.string().describe("The exchange name"),
+  routing_key: z.string().optional().default("").describe("The routing key"),
+  payload: z.string().describe("The message content (payload)"),
+  payload_encoding: z.string().optional().default("string").describe("Encoding of the payload (e.g., string)"),
+  properties: z.record(z.any()).optional().default({}).describe("Optional message properties")
+});
+
+export const publishMessage = {
+  name: "publish-message",
+  description: "Publish a message to a specific exchange",
+  params: publishMessageParams,
+  inputSchema: {
+    type: "object",
+    properties: {
+      vhost: { type: "string" },
+      exchange: { type: "string" },
+      routing_key: { type: "string", default: "" },
+      payload: { type: "string" },
+      payload_encoding: { type: "string", default: "string" },
+      properties: { type: "object", additionalProperties: true }
+    },
+    required: ["vhost", "exchange", "payload"]
+  },
+  annotations: {
+    title: "Publish Message",
+    readOnlyHint: false,
+    openWorldHint: true
+  },
+  handler: async (args: any): Promise<MCPToolResult> => {
+    const parsed = publishMessageParams.parse(args);
+    const { vhost, exchange, ...body } = parsed;
+
+    const result = await rabbitHttpRequest(
+        `/exchanges/${encodeURIComponent(vhost)}/${encodeURIComponent(exchange)}/publish`,
+        "POST",
+        undefined,
+        {
+          properties: body.properties || {},
+          routing_key: body.routing_key,
+          payload: body.payload,
+          payload_encoding: body.payload_encoding
+        }
+    );
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Message published. Routed: ${result.routed}`
+        } as MCPTextContent
+      ]
+    };
+  }
+};
+
 export const QUEUE_TOOLS = [
   listQueues,
   listQueuesVhost,
@@ -317,6 +385,7 @@ export const QUEUE_TOOLS = [
   deleteQueue,
   purgeQueue,
   getQueueMessages,
+  publishMessage,
   getQueueBindings,
   getQueueUnacked,
   pauseQueue,
